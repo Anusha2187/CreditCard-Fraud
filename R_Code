@@ -1,1 +1,579 @@
 
+```{r loadpackages, warning=FALSE, message=FALSE}
+pacman::p_load(data.table, tidyverse, ggplot2, ggcorrplot, pROC, ROSE,corrplot, dplyr, caret, MASS, caTools, smotefamily, DMwR, rpart, glmnet,reshape, gridExtra, MASS, MLmetrics, gplots, ggmap,mlbench, gains)
+options(digits = 3)
+knitr::opts_chunk$set(echo = TRUE, fig.width=12, fig.height=6, fig.path = 'Figs/')
+theme_set(theme_classic())
+
+```
+
+```{r readData}
+
+## Read CSV file
+cc <- read.csv("creditcard.csv")
+
+
+## Examine the structure of the data set
+str(cc)
+
+##Descriptive stats
+summary(cc)
+
+## Create the data.table
+credit.dt <- setDT(cc)
+credit.dt
+
+#Descriptive stats by Class
+temp1 <- credit.dt[, .(min.amount=min(Amount), max.amount=max(Amount), mean.amount=mean(Amount), med.amount=median(Amount), sd.amount=sd(Amount)), by=Class]
+temp1
+
+##Check for missing values
+colSums(is.na(cc))
+```
+```{r exploreClassImbalance}
+
+##Checking Class imbalance
+table(credit.dt$Class)
+
+#Percentage of Class imbalance
+100*prop.table(table(credit.dt$Class))
+
+common_theme <- theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+ggplot(data = credit.dt, aes(x = factor(Class), y = prop.table(stat(count)), 
+                             fill = factor(Class),
+                             label = scales::percent(prop.table(stat(count))))) +
+  scale_fill_brewer(palette = "Set2") +
+  geom_bar(position = "dodge") +
+  geom_text(stat = 'count',
+            position = position_dodge(.9),
+            vjust = -0.5,
+            size = 3) +
+  scale_x_discrete(labels = c("no fraud", "fraud")) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = 'Class', y = 'Percentage') + 
+  ggtitle ("Distribution of Class Variable") +
+  common_theme
+```
+
+```{r exploreCorrelation}
+
+#Correlations
+correlations <- cor(credit.dt[,], method="pearson")
+round(correlations, 2)
+##title <- "Correlation of Fraud Dataset Variables"
+corrplot(correlations, number.cex = .9, type = "upper",
+              method = "color", tl.cex=0.8,tl.col = "black")
+
+
+```
+
+```{r exploreTime}
+
+credit.dt %>%
+  ggplot(aes(x = Time, fill = factor(Class))) + geom_histogram(bins = 100)+
+  labs(x = 'Time in Seconds Since First Transaction', y = 'No. of Transactions') +
+  ggtitle('Distribution of Time of Transaction by Class') +
+  scale_fill_brewer(palette = "Set2") +
+  facet_grid(Class ~ ., scales = 'free_y') + common_theme
+
+
+```
+
+
+```{r exploreAmount}
+
+ggplot(credit.dt, aes(x = factor(Class), y = Amount)) + geom_boxplot() + 
+labs(x = 'Class (Non-Fraud vs Fraud)', y = 'Amount (Euros)') +
+ggtitle("Distribution of Transaction Amount by Class") + common_theme
+
+
+credit.dt %>%
+  ggplot(aes(x = Amount)) + geom_histogram(col="black", fill = "darkseagreen3")+
+  labs(x = 'Amount < 300 Euros', y = 'Frequency') +
+  ggtitle('Distribution of Amount < 300 Euros') + xlim(c(0,300))+ ylim(c(0,30000)) +
+                                  common_theme
+
+```
+```{r prepData}
+
+##caret::featurePlot(x=credit.dt[,2:29], y=credit.dt[,31])
+
+#Remove 'Time' variable
+cc.data <- credit.dt[,-1]
+
+
+#Change 'Class' variable to factor
+cc.data$Class <- as.factor(cc.data$Class)
+levels(cc.data$Class) <- c("Not_Fraud", "Fraud")
+
+head(cc.data)
+```
+```{r splitData}
+
+#Set seed to make partition reproducible
+set.seed(123) 
+
+#Train 70% of the dataset
+train.index <- sample(1:nrow(cc.data), 
+                   round(dim(cc.data) [1]*0.7))  
+
+#Collect all the columns with training row ID into training set
+train.data <- cc.data[train.index, ]
+
+#Remaining 30% of dataset for validation
+test.data <- cc.data[-train.index, ]
+
+head(train.data)
+head(test.data)
+
+```
+
+```{r classRatio}
+# Initial Class Ratio for Training Data
+
+tab <- table(train.data$Class)
+tab
+
+```
+
+```{r downsampling}
+set.seed(12345)
+down_train <- downSample(x = train.data[, -30],
+                         y=train.data$Class)
+table(down_train$Class)
+
+set.seed(5627)
+# Build down-sampled model
+down_fit <- rpart(Class ~ ., data = down_train)
+
+# AUC on down-sampled data
+pred_down <- predict(down_fit, newdata = test.data)
+
+print('Fitting model to downsampled data')
+roc.curve(test.data$Class, pred_down[,2], plotit = TRUE)
+
+
+```
+
+```{r upsampling}
+
+set.seed(12345)
+up_train <- upSample(x = train.data[, -30],
+  y = train.data$Class)
+
+table(up_train$Class)
+
+set.seed(5627)
+# Build up-sampled model
+up_fit <- rpart(Class ~ ., data = up_train)
+
+# AUC on up-sampled data
+pred_up <- predict(up_fit, newdata = test.data)
+
+print('Fitting model to upsampled data')
+roc.curve(test.data$Class, pred_up[,2], plotit = TRUE)
+
+```
+
+```{r SMOTE}
+
+##SMOTE: Synthetic Minority Oversampling Technique to Handle Class Imbalance
+## in Binary Classification
+
+##setDF(train.data)
+##class(train.data)
+
+##set.seed(12345)
+
+##solution<-matrix(table(train.data$Class))
+
+
+#solution<-as.data.frame(table(unlist(record)))
+#solution <-as.data.frame(train.data)	
+#solution <- as.data.frame(table(unlist(train.data$Class)))  
+##solution <- as.data.frame(train.data(unlist(record)))
+##smote_train <- SMOTE(Class ~., solution)
+                     ##perc.over = 4800, k = 5, perc.under = 1000) 
+##smote_fit <- rpart(Class ~ ., data = smote_train)
+
+##smote_train <- SMOTE(Class ~., data=train.data, perc.over = 4800, k = 5, perc.under = 1000)
+##as.data.frame(table(smote_train$Class))
+##table(smote_train$Class)
+```
+
+```{r ROSE}
+
+# ROSE
+set.seed(12345)
+rose_train <- ROSE(Class ~ ., data  = train.data)$data 
+
+table(rose_train$Class)
+
+# ROSE model
+set.seed(5627)
+rose_fit <- rpart(Class ~ ., data = rose_train)
+
+#AUC for ROSE model
+pred_rose <- predict(rose_fit, newdata = test.data)
+
+
+print('Fitting model to ROSE data')
+roc.curve(test.data$Class, pred_rose[,2], plotit = TRUE)
+
+```
+
+```{r prep Data}
+
+#Remove 'Time' variable
+cc.data <- credit.dt[,-1]
+
+
+#Change 'Class' variable to factor
+cc.data$Class <- as.factor(cc.data$Class)
+levels(cc.data$Class) <- c("Not_Fraud", "Fraud")
+
+head(cc.data)
+#Set seed to make partition reproducible
+set.seed(12345) 
+
+#Train 70% of the dataset
+train.index <- createDataPartition(credit.dt$Class, p = 0.7, list = FALSE)
+
+#Collect all the columns with training row ID into training set
+train.data <- cc.data[train.index, ]
+
+#Remaining 30% of dataset for validation
+test.data <- cc.data[-train.index, ]
+
+head(train.data)
+head(test.data)
+```
+
+```{r LDA}
+
+set.seed(12345)
+up_train <- upSample(x = train.data[, -30],
+  y = train.data$Class)
+
+table(up_train$Class)
+
+set.seed(12345)
+# Build up-sampled model
+up_fit <- rpart(Class ~ ., data = up_train)
+
+# AUC on up-sampled data
+pred_up <- predict(up_fit, newdata = test.data)
+
+# Upsample Test Data
+set.seed(12345)
+up_test <- upSample(x = test.data[, -30], y = test.data$Class)
+
+table(up_test$Class)
+
+ # Estimate preprocessing parameters
+#norm.values  <- preProcess(train.data, method = c("center", "scale"))
+norm.values  <- preProcess(up_train, method = c("center", "scale"))   
+ # Transform the data using the estimated parameters
+cc.train.norm <- predict(norm.values, up_train)
+cc.valid.norm <- predict(norm.values, up_test)
+  
+
+lda1 <- lda(Class~., data = cc.train.norm)
+lda1
+
+lda2<-lda(Class~., data = cc.valid.norm)
+lda2
+
+#Prior Probabilities 
+lda1$prior
+
+lda1$counts
+
+lda2$prior
+
+lda2$counts
+
+lda1
+
+#Prediction with training and test data
+pred1<-predict(lda1,cc.train.norm)
+pred1
+pred.sample<-predict(lda1, cc.train.norm[1:5, ])
+names(pred.sample)
+
+pred2<-predict(lda2,cc.valid.norm)
+pred2
+summary(pred2)
+
+#Plots an Histograms
+plot(lda1) # LDA plot for training data
+plot(lda2) # LDA plot for validation data 
+title(main = 'LDA Plot with Validation Data')
+ldahist(pred1$x[,1], 
+        g=cc.train.norm$Class,
+        col = 3)
+
+
+# Confusion matrix
+acc1<-table(pred1$class, cc.train.norm$Class)
+print("Confusion Matrix for Train Data")
+acc1
+
+acc2<-table(pred2$class, cc.valid.norm$Class)
+print("Confusion Matrix for Test Data")
+acc2
+
+#Precision score 
+precision <- acc2[2,2]/(acc2[2,2]+acc2[2,1])
+precision
+
+#Recall
+recall <- acc2[2,2]/(acc2[2,2]+acc2[1,2])
+recall
+
+#Specificity
+specificity <- acc2[1,1]/(acc2[1,1]+acc2[2,1])
+specificity
+
+#F Score
+fscore <- (precision*recall)/(precision+recall)
+fscore
+
+confusionMatrix(acc2)
+
+print('ROC')
+roc.curve(cc.valid.norm$Class, pred2$class, plotit = TRUE)
+
+#lift charts
+gain <- gains(cc.valid.norm$Class, pred2$Class)
+plot(c(0, gain$cume.pct.of.total*sum(cc$Class)) ~ c(0, gain$cume.obs), 
+     xlab = "# transactions", ylab = "Cumulative", type="l",
+     col="blue1")
+lines(c(0,sum(cc$actual))~c(0,dim(df)[1]), col="red1", lty=2)
+
+# Decile-wise lift chart
+barplot(gain$mean.resp/mean(Class), names.arg = gain$Class, space = 1.3,
+        xlab = "Percentile", ylab = "Mean Response", main = "Decile-wise lift chart",
+        col = "blue", border = NA)
+
+
+```
+
+# Upsample Test Data
+set.seed(12345)
+up_test <- upSample(x = test.data[, -30], y = test.data$Class)
+
+table(up_test$Class)
+
+logit.reg <- glm(Class ~ ., data = up_train, family = "binomial")
+options(scipen = 999) 
+summary(logit.reg)
+
+#Generate odds ratio
+exp(coef(logit.reg))
+
+#performance evaluation
+logit.reg.pred <- predict(logit.reg, up_test, type = "response")
+
+t(t(head(logit.reg.pred, 10)))
+
+#confusion matrix
+table(up_test$Class, logit.reg.pred > 0.5)
+
+summary(logit.reg.pred)
+
+acc2<-table(logit.reg.pred > 0.5, up_test$Class)
+print("Confusion Matrix for Test Data")
+acc2
+
+#Precision score 
+precision <- acc2[2,2]/(acc2[2,2]+acc2[2,1])
+precision
+
+#Recall
+recall <- acc2[2,2]/(acc2[2,2]+acc2[1,2])
+recall
+
+#Specificity
+specificity <- acc2[1,1]/(acc2[1,1]+acc2[2,1])
+specificity
+
+#F Score
+fscore <- (precision*recall)/(precision+recall)
+fscore
+
+
+print('ROC')
+roc.curve(up_test$Class, logit.reg.pred, plotit = TRUE)
+
+```
+```{r splitData}
+
+#Set seed to make partition reproducible
+set.seed(123)
+training.index <- createDataPartition(credit.dt$Class, p = 0.7, list = FALSE)
+train.data <- credit.dt[training.index, ]
+test.data <- credit.dt[-training.index, ]
+
+```
+
+```{r upsampling}
+
+set.seed(12345)
+up_train <- upSample(x = train.data[, -31], y = train.data$Class)
+
+# Upsample Test Data
+set.seed(12345)
+up_test <- upSample(x = test.data[, -31], y = test.data$Class)
+```
+
+```{r CART Models}
+
+# Generate classification tree
+set.seed(1234)
+credit.tree <- rpart(Class ~ ., data = up_train, method = "class")
+print(credit.tree)
+
+#plotting the tree
+rpart.plot(credit.tree)
+
+#rules from the generated tree
+rpart.rules(credit.tree)
+
+#prediction
+test.pred <- predict(credit.tree, newdata = up_test, method = "class")
+test.pred <- as.data.table(test.pred)
+
+target.class <- as.factor(ifelse(test.pred[,2] > 0.5, "1", "0"))
+
+#confusion matrix with 50% probability
+confusionMatrix(target.class, up_test$Class, positive = "1")
+
+#area under the curve(AUC)
+roc.curve(up_test$Class, target.class, plotit = TRUE)
+
+#plotting fully grown tree
+full.tree <- rpart(Class ~ ., data = up_train, method = "class", cp = 0)
+rpart.plot(full.tree)
+
+#performance of fully grown tree on training set 
+full.train <- predict(full.tree, newdata = up_train, method = "class")
+full.train <- as.data.table(full.train)
+
+full.class <- as.factor(ifelse(full.train[,2] > 0.5, "1", "0"))
+confusionMatrix(full.class, up_train$Class, positive = "1")
+
+#performance of fully grown tree on test set 
+full.test <- predict(full.tree, newdata = up_test, method = "class")
+full.test <- as.data.table(full.test)
+
+full.target <- as.factor(ifelse(full.test[,2] > 0.5, "1", "0"))
+
+confusionMatrix(full.target, up_test$Class, positive = "1")
+
+#pruning
+printcp(credit.tree)
+plotcp(credit.tree)
+
+ptree <- prune(credit.tree, cp= credit.tree$cptable[which.min(credit.tree$cptable[,"xerror"]),"CP"])
+
+fancyRpartPlot(ptree, uniform=TRUE, main="Pruned Classification Tree")
+```
+
+```{r Bagging}
+#bagging using random forest technique
+#Bagging
+set.seed(1234)
+
+memory.limit(size = 15000)
+
+bag.credit <- randomForest(as.factor(Class) ~ ., data = up_train, ntree = 300, mtry = 6, importance = TRUE)
+bag.credit
+
+#variable importance
+importance <- data.frame(bag.credit$importance)
+
+#plot the variable importance 
+Imp1 <- ggplot(importance, aes(x=reorder(rownames(importance),MeanDecreaseGini), y=MeanDecreaseGini)) +
+  geom_bar(stat="identity", fill="tomato", colour="black") +
+  coord_flip() + theme_bw(base_size = 8) +
+  labs(title="Prediction using RandomForest with 100 trees", subtitle="Variable importance (MeanDecreaseGini)", x="Variable", y="Variable importance (MeanDecreaseGini)")
+
+Imp2 <- ggplot(importance, aes(x=reorder(rownames(importance),MeanDecreaseAccuracy), y=MeanDecreaseAccuracy)) +
+  geom_bar(stat="identity", fill="lightblue", colour="black") +
+  coord_flip() + theme_bw(base_size = 8) +
+  labs(title="Prediction using RandomForest with 100 trees", subtitle="Variable importance (MeanDecreaseAccuracy)", x="Variable", y="Variable importance (MeanDecreaseAccuracy)")
+
+gt <- arrangeGrob(Imp1, Imp2, ncol=2)
+as_ggplot(gt)
+
+#prediction
+rf.pred <- as.factor(predict(bag.credit, newdata = up_test))
+
+#confusion matrix
+conf <- confusionMatrix(rf.pred, up_test$Class, positive = "1")
+conf
+
+#area under the curve(AUC)
+roc.curve(up_test$Class, rf.pred, plotit = TRUE)
+```
+
+```{r prepData}
+##caret::featurePlot(x=credit.dt[,2:29], y=credit.dt[,31])
+#Change 'Class' variable to factor
+credit.dt$Class <- as.factor(credit.dt$Class)
+```
+
+```{r splitData}
+#Set seed to make partition reproducible
+set.seed(123)
+training.index <- createDataPartition(credit.dt$Class, p = 0.7, list = FALSE)
+train.data <- credit.dt[training.index, ]
+test.data <- credit.dt[-training.index, ]
+```
+
+```{r upsampling}
+set.seed(12345)
+up_train <- upSample(x = train.data[, -31], y = train.data$Class)
+# Upsample Test Data
+set.seed(12345)
+up_test <- upSample(x = test.data[, -31], y = test.data$Class)
+```
+
+```{r xgboost implementation}
+#data prep
+xgb_train <- sparse.model.matrix(Class ~ .-1, data = up_train)
+levels(up_train$Class) <- c("Not_Fraud", "Fraud")
+
+xgb_test <- sparse.model.matrix(Class ~ . -1, data = up_test)
+
+#cross validation
+ctrl_xgb <- trainControl(method = "cv",
+                         number = 3, # 3-fold cross-validation
+                         summaryFunction=prSummary, 
+                         classProbs=TRUE,
+                         allowParallel = TRUE)
+```
+
+```{r}
+#model training
+set.seed(123)
+xgb_model <- train(x = xgb_train,
+                             y = up_train$Class,
+                             method = "xgbTree",
+                             metric = "AUC",
+                             trControl = ctrl_xgb)
+```
+
+```{r}
+#predicting using the model
+xgb_pred <- predict(xgb_model, xgb_test)
+pred <- as.data.table(xgb_pred)
+```
+
+```{r}
+#confusion matrix to check performance
+ConfusionMatrix(pred$xgb_pred, up_test$Class)
+```
+
